@@ -15,7 +15,6 @@ env/
 
 #AI Summarizer specific
 temp_summaries/
-*.md
 
 #OS / Editor
 .DS_Store
