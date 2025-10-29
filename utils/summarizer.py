@@ -227,7 +227,8 @@ async def summarize_project(summary_paths: list[str], project_name: str = "Proje
                     overview_summaries.append(f"**File: {orig_filename}**\n{content}...")
             except Exception as e:
                 print(f"[WARN] Could not read temp overview file {path}: {e}")
-        
+                
+        snippet_text = "\n\n".join(overview_summaries)
         overview_prompt = f"""
 You are a 10x Staff Software Architect.
 Analyze the following file summary snippets from a codebase named '{project_name}' and provide a high-level executive summary.
@@ -238,7 +239,7 @@ Focus on:
 3.  **Architecture**: What is the high-level architecture?
 
 **File Summary Snippets:**
-{"\n\n".join(overview_summaries)}
+{snippet_text}
 (and {len(summary_paths) - len(overview_summaries)} more files)
 """
         overview = await summarize_project_batch_async(overview_prompt, model_project)

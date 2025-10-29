@@ -16,7 +16,9 @@ load_dotenv()
 app = FastAPI(title="AI GitHub Analyzer (Async Streaming & Classic)")
 
 # Regex for GitHub repo URLs
-GITHUB_REGEX = r"^https(?:\/\/|::)github\.com\/([\w\-]+)\/([\w\-]+)(?:\/tree\/[\w\.-]+)?(?:\/)?$"
+# Regex for GitHub repo URLs (with optional .git or trailing slash)
+GITHUB_REGEX = r"^https:\/\/github\.com\/([\w\-]+)\/([\w\-]+)(?:\.git)?\/?$"
+
 
 # Text file extensions to process
 TEXT_EXTENSIONS = [
