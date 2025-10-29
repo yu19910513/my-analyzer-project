@@ -1,4 +1,5 @@
 import os
+import json
 from datetime import datetime
 from dotenv import load_dotenv
 import google.generativeai as genai
@@ -25,8 +26,8 @@ if not GEMINI_API_KEY:
 else:
     genai.configure(api_key=GEMINI_API_KEY)
 
-MODEL_FILE_NAME = "models/gemini-2.5-flash-preview-09-2025"
-MODEL_PROJECT_NAME = "models/gemini-2.5-flash-preview-09-2025"
+MODEL_FILE_NAME = "models/gemini-1.5-flash-latest" # Using a standard model name
+MODEL_PROJECT_NAME = "models/gemini-1.5-flash-latest" # Using a standard model name
 
 # Generation configs
 gen_config_file = genai.GenerationConfig(
@@ -121,17 +122,39 @@ async def summarize_file_chunk_async(
                 await asyncio.sleep(delay)
                 delay *= 2
         
-        return await summarize_with_openai_async(prompt)
+    return await summarize_with_openai_async(prompt)
 
-async def summarize_file(path: str, content: str) -> str:
+async def summarize_file(path: str, content: str, sha: str) -> str:
     """
-    Summarizes a single file, saves it to a temp file, 
+    Summarizes a single file, saves it to a temp JSON file with its SHA,
     and returns the path to that temp file.
+    Checks for a cached summary with a matching SHA first.
     """
     if not model_file:
         return "[ERROR] Gemini file model not initialized."
         
-    print(f"[INFO] Starting summary for: {path}")
+    # --- Caching Logic ---
+    # Create a safe filename (e.g., "api_utils_test.js.json")
+    safe_filename = path.replace('/', '_').replace('\\', '_')
+    temp_filepath = os.path.join(TEMP_SUMMARY_DIR, f"{safe_filename}.json") # .json extension
+
+    # 1. Check if cache file exists
+    if os.path.exists(temp_filepath):
+        try:
+            async with aiofiles.open(temp_filepath, "r", encoding="utf-8") as f:
+                cache_data = json.loads(await f.read())
+            
+            # 2. Check if SHA matches
+            if cache_data.get("sha") == sha:
+                print(f"[CACHE] Using existing summary for: {path}")
+                return temp_filepath # SHA matches, return cached file path
+            else:
+                print(f"[CACHE] Stale summary for {path}. Re-generating...")
+        except Exception as e:
+            print(f"[WARN] Failed to read cache file {temp_filepath}: {e}. Re-generating...")
+    # --- END Caching Logic ---
+
+    print(f"[INFO] Starting new summary for: {path}")
     chunks = chunk_content(content)
     tasks = []
     
@@ -158,23 +181,22 @@ Content:
     chunk_summaries = await asyncio.gather(*tasks)
     full_summary_content = "\n\n---\n\n".join(chunk_summaries)
     
-    # --- NEW: Save summary to a temp file ---
-    # Ensure temp directory exists (should be created by main.py, but good to double-check)
+    # --- Save summary and SHA to a temp JSON file ---
     os.makedirs(TEMP_SUMMARY_DIR, exist_ok=True)
     
-    # Create a safe filename (e.g., "api_utils_test.js.md")
-    safe_filename = path.replace('/', '_').replace('\\', '_')
-    temp_filepath = os.path.join(TEMP_SUMMARY_DIR, f"{safe_filename}.md")
+    cache_to_write = {
+        "sha": sha,
+        "summary": full_summary_content
+    }
 
     try:
         async with aiofiles.open(temp_filepath, "w", encoding="utf-8") as f:
-            await f.write(full_summary_content)
+            await f.write(json.dumps(cache_to_write, indent=2))
         print(f"[INFO] Saved temp summary to: {temp_filepath}")
-        # Return the path to the temp file
         return temp_filepath
     except Exception as e:
         print(f"[ERROR] Failed to write temp summary file {temp_filepath}: {e}")
-        return None # Return None on failure
+        return None
     # --- END NEW ---
 
 async def summarize_project_batch_async(
@@ -195,7 +217,7 @@ async def summarize_project_batch_async(
 
 async def summarize_project(summary_paths: list[str], project_name: str = "Project") -> str:
     """
-    Summarizes the entire project from a list of temp summary file paths.
+    Summarizes the entire project from a list of temp summary JSON file paths.
     Deletes the temp files after successful completion.
     """
     if not model_project:
@@ -222,8 +244,9 @@ async def summarize_project(summary_paths: list[str], project_name: str = "Proje
             try:
                 async with aiofiles.open(path, 'r', encoding='utf-8') as f:
                     # Get file name from path
-                    orig_filename = os.path.basename(path).replace('_', '/').replace('.md', '')
-                    content = await f.read(1000) # Read first 1000 chars
+                    orig_filename = os.path.basename(path).replace('_', '/').replace('.json', '')
+                    cache_data = json.loads(await f.read())
+                    content = cache_data.get("summary", "")[:1000] # Read first 1000 chars
                     overview_summaries.append(f"**File: {orig_filename}**\n{content}...")
             except Exception as e:
                 print(f"[WARN] Could not read temp overview file {path}: {e}")
@@ -260,8 +283,9 @@ Focus on:
                 try:
                     async with aiofiles.open(path, 'r', encoding='utf-8') as f:
                         # Get original file name from temp path
-                        orig_filename = os.path.basename(path).replace('_', '/').replace('.md', '')
-                        content = await f.read()
+                        orig_filename = os.path.basename(path).replace('_', '/').replace('.json', '')
+                        cache_data = json.loads(await f.read())
+                        content = cache_data.get("summary", "[ERROR] Summary not found in cache")
                         batch_summaries.append(f"--- File: {orig_filename} ---\n{content}")
                 except Exception as e:
                     print(f"[WARN] Failed to read temp file {path} for batch: {e}")
@@ -315,4 +339,3 @@ Format the output in clean Markdown.
     except Exception as e:
         print(f"[ERROR] Failed to write final summary file: {e}")
         return f"[ERROR] Failed to write final summary file: {e}"
-

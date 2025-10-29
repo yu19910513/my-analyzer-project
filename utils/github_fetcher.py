@@ -45,13 +45,13 @@ async def fetch_dir(client, owner: str, repo: str, path=""):
             return {}
         content = await fetch_file(client, data["download_url"])
         if content:
-            files[data["path"]] = content
+            # Store sha and content
+            files[data["path"]] = {"sha": data.get("sha"), "content": content}
         return files
 
     # If a directory
-    tasks = []
-    # We need a separate list to map file content results back to paths
-    file_paths_in_this_dir = [] 
+    file_fetch_info = []  # Store info for files to fetch
+    dir_tasks = []        # Separate list for directory tasks
     
     if not isinstance(data, list):
         print(f"[WARN] Expected list for directory contents at {path}, but got {type(data)}. Skipping.")
@@ -72,48 +72,48 @@ async def fetch_dir(client, owner: str, repo: str, path=""):
                 print(f"[WARN] No download_url for file: {item.get('path')}")
                 continue
 
-            # Add the file fetch task
-            tasks.append(
-                fetch_file(client, item["download_url"])
-            )
-            # Store its path in order
-            file_paths_in_this_dir.append(item["path"])
+            # Add file info to our list instead of creating the task
+            file_fetch_info.append({
+                "path": item["path"],
+                "sha": item.get("sha"),
+                "url": item["download_url"]
+            })
             
         elif item.get("type") == "dir":
             # Add the recursive directory fetch task
-            tasks.append(
+            dir_tasks.append(
                 fetch_dir(client, owner, repo, item["path"])
             )
 
+    # Create file tasks from our info list
+    file_tasks = [fetch_file(client, f["url"]) for f in file_fetch_info]
+    
     # Wait for all file fetch tasks and subdirectory tasks to complete
-    if tasks:
-        results = await asyncio.gather(*tasks)
+    if file_tasks or dir_tasks:
+        results = await asyncio.gather(*file_tasks, *dir_tasks)
         
-        file_content_index = 0
-        for res in results:
+        num_file_results = len(file_tasks)
+        
+        # Process file results
+        for i, content in enumerate(results[:num_file_results]):
+            if content: # Only add if fetch was successful
+                info = file_fetch_info[i]
+                files[info["path"]] = {"sha": info["sha"], "content": content}
+        
+        # Process directory results
+        for res in results[num_file_results:]:
             if isinstance(res, dict):
-                # This is a dict of files from a subdirectory
                 files.update(res)
-            elif isinstance(res, str):
-                # This is file content.
-                # Assign it to the correct path from our ordered list.
-                if file_content_index < len(file_paths_in_this_dir):
-                    path = file_paths_in_this_dir[file_content_index]
-                    files[path] = res # res is guaranteed not None (it's a string)
-                    file_content_index += 1
-                else:
-                    # This should not happen if logic is correct
-                    print(f"[WARN] Mismatched file content. Discarding.")
-            # We explicitly ignore None results from failed fetch_file calls
 
     return files
 
 
-def fetch_files(owner: str, repo: str) -> dict[str, str]:
+def fetch_files(owner: str, repo: str) -> dict[str, dict[str, str]]:
     """
     Entry point to fetch all files from a GitHub repo.
     This function runs the async fetcher and blocks until it's done.
     It's intended to be run in a separate thread via `asyncio.to_thread`.
+    Returns a dict mapping file path to {"sha": str, "content": str}
     """
     async def runner():
         async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
@@ -126,9 +126,11 @@ def fetch_files(owner: str, repo: str) -> dict[str, str]:
         files = asyncio.run(runner())
         print(f"[INFO] Fetched {len(files)} files.")
         # Filter out any files that had None content
-        return {path: content for path, content in files.items() if content is not None}
+        return {
+            path: data for path, data in files.items()
+            if data and data.get("content") is not None
+        }
     except Exception as e:
         print(f"[ERROR] Async runner failed: {e}")
         # Propagate exception to be handled by main.py
         raise e
-

@@ -13,9 +13,8 @@ from utils.summarizer import summarize_file, summarize_project, TEMP_SUMMARY_DIR
 
 load_dotenv()
 
-app = FastAPI(title="AI GitHub Analyzer (Async Streaming & Classic)")
+app = FastAPI(title="AI GitHub Analyzer (Async Streaming & Caching)")
 
-# Regex for GitHub repo URLs
 # Regex for GitHub repo URLs (with optional .git or trailing slash)
 GITHUB_REGEX = r"^https:\/\/github\.com\/([\w\-]+)\/([\w\-]+)(?:\.git)?\/?$"
 
@@ -46,7 +45,7 @@ async def home():
 async def analyze_repo(url: str):
     """
     Analyzes a GitHub repo and returns a single JSON response
-    after all processing is complete.
+    after all processing is complete. Uses caching.
     """
     # Validate GitHub URL
     match = re.match(GITHUB_REGEX, url)
@@ -61,7 +60,7 @@ async def analyze_repo(url: str):
 
     # Fetch all files
     try:
-        # Running in a thread to avoid blocking the event loop
+        # files is now dict[path, {"sha": str, "content": str}]
         files = await asyncio.to_thread(fetch_files, owner, repo)
     except Exception as e:
         print(f"[ERROR] Error fetching files: {e}")
@@ -72,8 +71,8 @@ async def analyze_repo(url: str):
 
     # Filter files
     files_to_process = {
-        p: c for p, c in files.items() 
-        if any(p.endswith(ext) for ext in TEXT_EXTENSIONS) and c.strip()
+        p: data for p, data in files.items()
+        if any(p.endswith(ext) for ext in TEXT_EXTENSIONS) and data.get("content", "").strip()
     }
     
     if not files_to_process:
@@ -82,16 +81,16 @@ async def analyze_repo(url: str):
     print(f"[INFO] Fetched {len(files)} files, processing {len(files_to_process)}.")
 
     # Summarize files asynchronously
-    async def summarize_path(path, content):
+    async def summarize_path(path, file_data):
         """Helper to run summarize_file and return its path."""
         try:
-            # summarize_file now returns a path to the temp summary
-            return await summarize_file(path, content)
+            # Pass path, content, and sha
+            return await summarize_file(path, file_data["content"], file_data["sha"])
         except Exception as e:
             print(f"[ERROR] Failed to summarize {path}: {e}")
             return None
 
-    tasks = [summarize_path(p, c) for p, c in files_to_process.items()]
+    tasks = [summarize_path(p, data) for p, data in files_to_process.items()]
     
     # summary_paths will be a list of file paths to the temp summaries
     summary_paths = await asyncio.gather(*tasks)
@@ -123,7 +122,7 @@ async def analyze_repo(url: str):
 async def summarize_files_stream(url: str, request: Request):
     """
     Asynchronously fetches, summarizes, and streams results
-    using Server-Sent Events (SSE).
+    using Server-Sent Events (SSE). Uses caching.
     """
     # Validate GitHub URL
     match = re.match(GITHUB_REGEX, url)
@@ -137,6 +136,7 @@ async def summarize_files_stream(url: str, request: Request):
     # Fetch files
     try:
         yield f"data: {json.dumps({'status': 'Fetching repository structure...', 'repo': f'{owner}/{repo}'})}\n\n"
+        # files is now dict[path, {"sha": str, "content": str}]
         files = await asyncio.to_thread(fetch_files, owner, repo)
     except Exception as e:
         print(f"[STREAM] Error fetching files: {e}")
@@ -149,8 +149,8 @@ async def summarize_files_stream(url: str, request: Request):
         
     # Filter files to process
     files_to_process = {
-        p: c for p, c in files.items() 
-        if any(p.endswith(ext) for ext in TEXT_EXTENSIONS) and c.strip()
+        p: data for p, data in files.items()
+        if any(p.endswith(ext) for ext in TEXT_EXTENSIONS) and data.get("content", "").strip()
     }
     
     if not files_to_process:
@@ -163,7 +163,7 @@ async def summarize_files_stream(url: str, request: Request):
     # This list will hold the file paths to the temporary summaries
     file_summary_paths = []
 
-    for idx, (path, content) in enumerate(files_to_process.items(), start=1):
+    for idx, (path, file_data) in enumerate(files_to_process.items(), start=1):
         if await request.is_disconnected():
             print("[STREAM] Client disconnected. Stopping stream.")
             return
@@ -171,8 +171,8 @@ async def summarize_files_stream(url: str, request: Request):
         try:
             yield f"data: {json.dumps({'status': f'Summarizing {path} ({idx}/{total_files})...'})}\n\n"
             
-            # 1. summarize_file saves the summary to a temp file and returns the path
-            summary_path = await summarize_file(path, content)
+            # 1. Pass path, content, and sha (includes caching logic)
+            summary_path = await summarize_file(path, file_data["content"], file_data["sha"])
             
             if summary_path is None:
                 print(f"[STREAM] Skipping failed summary for {path}")
@@ -181,9 +181,10 @@ async def summarize_files_stream(url: str, request: Request):
 
             file_summary_paths.append(summary_path)
 
-            # 2. We read that temp file's content to stream it back to the user
+            # 2. We read that temp JSON file's content to stream it back to the user
             async with aiofiles.open(summary_path, 'r', encoding='utf-8') as f:
-                summary_content = await f.read()
+                cache_data = json.loads(await f.read())
+                summary_content = cache_data.get("summary", "[ERROR] Summary not found in cache")
 
             # 3. Stream the file summary content
             yield f"data: {json.dumps({'file_summary': {'path': path, 'summary': summary_content}})}\n\n"
@@ -225,4 +226,3 @@ if __name__ == "__main__":
     # Make sure GITHUB_TOKEN and GOOGLE_API_KEY are in your .env file
     print("Starting server... Access docs at http://127.0.0.1:8000/docs")
     uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=True)
-
