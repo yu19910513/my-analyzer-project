@@ -26,8 +26,8 @@ if not GEMINI_API_KEY:
 else:
     genai.configure(api_key=GEMINI_API_KEY)
 
-MODEL_FILE_NAME = "models/gemini-1.5-flash-latest" # Using a standard model name
-MODEL_PROJECT_NAME = "models/gemini-1.5-flash-latest" # Using a standard model name
+MODEL_FILE_NAME = "gemini-2.5-flash"
+MODEL_PROJECT_NAME = "gemini-2.5-flash-latest"
 
 # Generation configs
 gen_config_file = genai.GenerationConfig(
@@ -36,6 +36,8 @@ gen_config_file = genai.GenerationConfig(
 gen_config_project = genai.GenerationConfig(
     temperature=0.2, top_p=0.9, top_k=30, max_output_tokens=4096
 )
+
+
 
 # Safety settings
 safety_settings = [
@@ -47,10 +49,15 @@ safety_settings = [
 
 try:
     model_file = genai.GenerativeModel(
-        MODEL_FILE_NAME, generation_config=gen_config_file, safety_settings=safety_settings
+        MODEL_FILE_NAME,
+        generation_config=gen_config_file,
+        safety_settings=safety_settings
     )
+
     model_project = genai.GenerativeModel(
-        MODEL_PROJECT_NAME, generation_config=gen_config_project, safety_settings=safety_settings
+        MODEL_PROJECT_NAME,
+        generation_config=gen_config_project,
+        safety_settings=safety_settings
     )
 except Exception as e:
     print(f"[ERROR] Could not initialize Gemini models: {e}")
